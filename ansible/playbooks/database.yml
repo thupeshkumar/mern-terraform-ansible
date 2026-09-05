@@ -1,0 +1,160 @@
+---
+- name: Install and secure MongoDB on the database server
+  hosts: db
+  become: true
+
+  tasks:
+    - name: Install prerequisite packages (incl. pymongo via apt - Ubuntu 26.04's
+        Python 3.14 blocks system-wide pip installs under PEP 668)
+      apt:
+        name:
+          - gnupg
+          - curl
+          - ufw
+          - python3-pymongo
+        state: present
+        update_cache: true
+
+    - name: Download MongoDB GPG key
+      get_url:
+        url: https://www.mongodb.org/static/pgp/server-7.0.asc
+        dest: /tmp/mongodb-server-7.0.asc
+        mode: "0644"
+
+    - name: Dearmor MongoDB GPG key into a keyring (apt-key is gone on 26.04)
+      command: gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor /tmp/mongodb-server-7.0.asc
+      args:
+        creates: /usr/share/keyrings/mongodb-server-7.0.gpg
+
+    - name: Add MongoDB apt repository
+      # NOTE: MongoDB 7.0's official apt repo only publishes for the `jammy` (22.04)
+      # suite - unlike 8.0/8.2 it was never extended to `noble` (24.04), and there is
+      # no `resolute` (26.04) suite at all yet. So on a 26.04 host this points at
+      # jammy, one LTS further back than the 8.0 workaround used elsewhere in this repo.
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse"
+        state: present
+        filename: mongodb-org-7.0
+
+    - name: Install mongodb-org
+      apt:
+        name: mongodb-org
+        state: present
+        update_cache: true
+
+    - name: Ensure mongod is started and enabled (pre-auth, for initial user creation)
+      systemd:
+        name: mongod
+        state: started
+        enabled: true
+
+    - name: Wait for MongoDB to accept connections
+      wait_for:
+        port: 27017
+        host: 127.0.0.1
+        delay: 3
+        timeout: 60
+
+    # ---------- Create the admin user (no auth enabled yet, so this works) ----------
+    - name: Create MongoDB admin user
+      community.mongodb.mongodb_user:
+        login_host: 127.0.0.1
+        database: admin
+        name: "{{ mongo_admin_user }}"
+        password: "{{ mongo_admin_password }}"
+        roles:
+          - { db: admin, role: userAdminAnyDatabase }
+          - { db: admin, role: readWriteAnyDatabase }
+        state: present
+
+    # ---------- Create the application user/database ----------
+    - name: Create application database user
+      community.mongodb.mongodb_user:
+        login_host: 127.0.0.1
+        login_user: "{{ mongo_admin_user }}"
+        login_password: "{{ mongo_admin_password }}"
+        login_database: admin
+        database: "{{ mongo_db_name }}"
+        name: "{{ mongo_app_user }}"
+        password: "{{ mongo_app_password }}"
+        roles:
+          - { db: "{{ mongo_db_name }}", role: readWrite }
+        state: present
+      register: app_user_created
+      ignore_errors: true   # first run (before auth is on) needs no login_user/password
+
+    - name: Create application database user (no-auth fallback for first run)
+      community.mongodb.mongodb_user:
+        login_host: 127.0.0.1
+        database: "{{ mongo_db_name }}"
+        name: "{{ mongo_app_user }}"
+        password: "{{ mongo_app_password }}"
+        roles:
+          - { db: "{{ mongo_db_name }}", role: readWrite }
+        state: present
+      when: app_user_created is failed
+
+    # ---------- Lock down bindIp and enable authentication ----------
+    - name: Template mongod.conf (bindIp + authorization enabled)
+      template:
+        src: ../templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: restart mongod
+
+    - meta: flush_handlers
+
+    - name: Confirm MongoDB is listening after restart
+      wait_for:
+        port: 27017
+        host: "{{ ansible_default_ipv4.address }}"
+        delay: 3
+        timeout: 60
+
+    # ---------- Firewall hardening (defense in depth alongside the SG) ----------
+    - name: Allow SSH only from the web server's private IP
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ web_private_ip }}"
+        port: "22"
+        proto: tcp
+
+    - name: Allow MongoDB only from the web server's private IP
+      community.general.ufw:
+        rule: allow
+        from_ip: "{{ web_private_ip }}"
+        port: "27017"
+        proto: tcp
+
+    - name: Enable ufw with default-deny policy
+      community.general.ufw:
+        state: enabled
+        policy: deny
+
+    # ---------- SSH hardening ----------
+    - name: Disable SSH root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+      notify: restart sshd
+
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+      notify: restart sshd
+
+  handlers:
+    - name: restart mongod
+      systemd:
+        name: mongod
+        state: restarted
+
+    - name: restart sshd
+      systemd:
+        name: ssh
+        state: restarted

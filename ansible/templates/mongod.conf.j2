@@ -1,0 +1,18 @@
+# Managed by Ansible - see ansible/templates/mongod.conf.j2
+
+storage:
+  dbPath: /var/lib/mongodb
+
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+
+net:
+  port: 27017
+  # Only listen on localhost and this instance's private IP -
+  # never bind 0.0.0.0 on a database server.
+  bindIp: 127.0.0.1,{{ ansible_default_ipv4.address }}
+
+security:
+  authorization: enabled

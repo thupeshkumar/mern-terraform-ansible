@@ -1,0 +1,15 @@
+[Unit]
+Description=TravelMemory Express backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory={{ app_dir }}/backend
+EnvironmentFile={{ app_dir }}/backend/.env
+ExecStart=/usr/bin/node index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

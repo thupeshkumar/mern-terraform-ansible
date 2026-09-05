@@ -1,0 +1,21 @@
+---
+# --- Application ---
+app_repo: "https://github.com/UnpredictablePrashant/TravelMemory.git"
+app_dir: "/opt/travelmemory"
+node_version: "18"          # NodeSource major version to install
+backend_port: 3001
+
+# --- MongoDB ---
+mongo_db_name: "travelmemory"
+mongo_app_user: "tm_app_user"
+mongo_app_password: "ChangeMe_App_Pass123!"     # override via --extra-vars or a vault file in real use
+mongo_admin_user: "tm_admin"
+mongo_admin_password: "ChangeMe_Admin_Pass123!" # override via --extra-vars or a vault file in real use
+
+# Private IP of the db host as seen from the web server (fill in from terraform output)
+db_private_ip: "10.0.2.139"
+
+# Private IP of the web host as seen from the db host, inside the VPC
+# (find it with: aws ec2 describe-instances --filters "Name=tag:Role,Values=web" \
+#  --query "Reservations[].Instances[].PrivateIpAddress" --output text)
+web_private_ip: "10.0.1.8"

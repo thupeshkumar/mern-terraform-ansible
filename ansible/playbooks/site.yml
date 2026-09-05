@@ -1,0 +1,5 @@
+---
+# Run database.yml first so MongoDB + the app user already exist
+# before the backend on the web server tries to connect to it.
+- import_playbook: database.yml
+- import_playbook: webserver.yml

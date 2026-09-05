@@ -1,0 +1,182 @@
+---
+- name: Configure web server and deploy TravelMemory (MERN frontend + backend)
+  hosts: web
+  become: true
+
+  vars:
+    mongo_uri: "mongodb://{{ mongo_app_user }}:{{ mongo_app_password }}@{{ db_private_ip }}:27017/{{ mongo_db_name }}?authSource={{ mongo_db_name }}"
+
+  tasks:
+    # ---------- Base packages ----------
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - git
+          - build-essential
+          - nginx
+          - ufw
+        state: present
+
+    # ---------- Node.js / NPM ----------
+    - name: Add NodeSource GPG key and repo
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_{{ node_version }}.x | bash -
+      args:
+        creates: /etc/apt/sources.list.d/nodesource.list
+
+    - name: Install Node.js (includes npm)
+      apt:
+        name: nodejs
+        state: present
+        update_cache: true
+
+    - name: Install pm2 globally (process manager for Node)
+      npm:
+        name: pm2
+        global: true
+
+    # ---------- Fetch application code ----------
+    - name: Ensure app directory exists
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Clone TravelMemory repository
+      git:
+        repo: "{{ app_repo }}"
+        dest: "{{ app_dir }}"
+        version: main
+        force: true
+      become_user: ubuntu
+
+    # ---------- Backend ----------
+    - name: Install backend dependencies
+      npm:
+        path: "{{ app_dir }}/backend"
+      become_user: ubuntu
+
+    - name: Template backend .env file
+      template:
+        src: ../templates/backend.env.j2
+        dest: "{{ app_dir }}/backend/.env"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: Create systemd unit for the backend (Express API)
+      template:
+        src: ../templates/travelmemory-backend.service.j2
+        dest: /etc/systemd/system/travelmemory-backend.service
+        mode: "0644"
+      notify: restart backend
+
+    - name: Enable and start the backend service
+      systemd:
+        name: travelmemory-backend
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ---------- Frontend ----------
+    - name: Point frontend at this server's own public IP for API calls
+      # NOTE: TravelMemory keeps its backend base URL in frontend/src/url.js as
+      # `export const BASE_URL = "...";`. Verify that path/line still matches after
+      # cloning (repo revisions drift) - `grep -rn BASE_URL frontend/src/` on the box
+      # will show you the real file/line if this task's diff comes back empty.
+      lineinfile:
+        path: "{{ app_dir }}/frontend/src/url.js"
+        regexp: "^export const BASE_URL"
+        line: "export const BASE_URL = \"http://{{ ansible_host }}:{{ backend_port }}\";"
+      become_user: ubuntu
+
+    - name: Install frontend dependencies
+      npm:
+        path: "{{ app_dir }}/frontend"
+      become_user: ubuntu
+
+    - name: Build frontend production bundle
+      command: npm run build
+      args:
+        chdir: "{{ app_dir }}/frontend"
+      become_user: ubuntu
+
+    # ---------- Nginx reverse proxy ----------
+    - name: Template Nginx site config
+      template:
+        src: ../templates/nginx-travelmemory.conf.j2
+        dest: /etc/nginx/sites-available/travelmemory
+        mode: "0644"
+      notify: reload nginx
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/travelmemory
+        dest: /etc/nginx/sites-enabled/travelmemory
+        state: link
+      notify: reload nginx
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: reload nginx
+
+    # ---------- Firewall hardening ----------
+    - name: Allow OpenSSH through ufw
+      community.general.ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Allow HTTP/HTTPS through ufw
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "80"
+        - "443"
+
+    - name: Enable ufw
+      community.general.ufw:
+        state: enabled
+        policy: deny
+
+    # ---------- SSH hardening ----------
+    - name: Disable SSH root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+      notify: restart sshd
+
+    - name: Disable SSH password authentication (key-based only)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+      notify: restart sshd
+
+  handlers:
+    - name: restart backend
+      systemd:
+        name: travelmemory-backend
+        state: restarted
+
+    - name: reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: restart sshd
+      systemd:
+        name: ssh
+        state: restarted

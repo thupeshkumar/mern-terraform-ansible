@@ -1,0 +1,10 @@
+# Copy this file to terraform.tfvars and fill in your own values.
+# terraform.tfvars is gitignored on purpose - never commit real IPs/keys if the repo is public.
+
+aws_region   = "ap-south-1"
+project_name = "travelmemory"
+
+key_name = "travelmemory-key"          # must already exist in your AWS account/region
+my_ip    = "49.207.10.5/32"            # run: curl -s https://checkip.amazonaws.com  then append /32
+
+instance_type = "t3.micro"   # NOT t2.micro - MongoDB 5.0+ requires AVX, which t2.* lacks
